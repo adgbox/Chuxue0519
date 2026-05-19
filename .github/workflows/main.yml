@@ -1,0 +1,191 @@
+name: Auto Upload IPA to App Store
+
+on:
+  push:
+    paths:
+      - '**.json' # 检测到有任何 .json 文件被传上来，就会自动触发
+  workflow_dispatch: # 保留手动按钮，以防万一你想手动重试
+
+jobs:
+  upload:
+    runs-on: macos-latest
+    
+    steps:
+      - name: 下载仓库代码和文件
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: 自动查找并上传 IPA 文件
+        run: |
+          # 查找新添加的 JSON 配置文件
+          JSON_FILE=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- '*.json' 2>/dev/null | head -n 1)
+
+          # 如果没找到，则查找仓库中所有 JSON 文件
+          if [ -z "$JSON_FILE" ]; then
+            JSON_FILE=$(find . -name "*.json" -type f | head -n 1)
+          fi
+
+          if [ -z "$JSON_FILE" ]; then
+            echo "错误: 没有找到任何 JSON 配置文件！"
+            exit 1
+          fi
+
+          echo "找到配置文件: $JSON_FILE"
+
+          # 提取 job_id（文件名去掉 .json 后缀）
+          JSON_FILENAME=$(basename "$JSON_FILE")
+          JOB_ID="${JSON_FILENAME%.json}"
+
+          echo "Job ID: $JOB_ID"
+
+          # 读取 JSON 配置
+          APPLE_ID=$(jq -r '.APPLE_ID' "$JSON_FILE")
+          APP_PASSWORD=$(jq -r '.APP_PASSWORD' "$JSON_FILE")
+          URL=$(jq -r '.URL' "$JSON_FILE")
+          CALLBACK_URL=$(jq -r '.CALLBACK' "$JSON_FILE")
+
+          echo "Apple ID: $APPLE_ID"
+          echo "下载地址: $URL"
+          echo "回调地址: $CALLBACK_URL"
+
+          # 下载 IPA 文件到临时目录
+          echo "准备从网络下载 IPA..."
+          DOWNLOADED_IPA=$(mktemp /tmp/downloaded.XXXXXX.ipa)
+          
+
+          if ! curl -L -o "$DOWNLOADED_IPA" "$URL"; then
+            echo "错误: IPA 下载失败！"
+
+            # 即使下载失败也发送通知
+            if [ "$CALLBACK_URL" != "null" ] && [ -n "$CALLBACK_URL" ]; then
+              MARKDOWN_TEXT="## ❌ IPA 下载失败\n\n**下载地址:** $URL\n**Apple ID:** $APPLE_ID\n**时间:** $(date -u +%Y-%m-%dT%H:%M:%SZ)\n\n<font color=\"warning\">无法下载IPA文件</font>"
+              curl -X POST "$CALLBACK_URL" \
+                -H "Content-Type: application/json" \
+                -d "{\"msgtype\":\"markdown\",\"markdown\":{\"content\":\"$MARKDOWN_TEXT\"}}" || true
+            fi
+            exit 1
+          fi
+
+          if [ ! -f "$DOWNLOADED_IPA" ] || [ ! -s "$DOWNLOADED_IPA" ]; then
+            echo "错误: 下载的文件不存在或为空！"
+
+            # 发送通知
+            if [ "$CALLBACK_URL" != "null" ] && [ -n "$CALLBACK_URL" ]; then
+              MARKDOWN_TEXT="## ❌ IPA 文件无效\n\n**下载地址:** $URL\n**Apple ID:** $APPLE_ID\n**时间:** $(date -u +%Y-%m-%dT%H:%M:%SZ)\n\n<font color=\"warning\">下载的文件为空</font>"
+              curl -X POST "$CALLBACK_URL" \
+                -H "Content-Type: application/json" \
+                -d "{\"msgtype\":\"markdown\",\"markdown\":{\"content\":\"$MARKDOWN_TEXT\"}}" || true
+            fi
+            exit 1
+          fi
+
+          echo "IPA 下载成功: $DOWNLOADED_IPA"
+
+          # 调用 macOS 自带的官方上传工具，捕获输出
+          UPLOAD_LOG=$(mktemp /tmp/upload_log.XXXXXX.txt)
+
+          echo "开始上传 IPA 到 App Store..."
+          set +e  # 临时禁用错误退出，确保能捕获日志
+          xcrun altool --upload-app \
+            -f "$DOWNLOADED_IPA" \
+            -t ios \
+            -u "$APPLE_ID" \
+            -p "$APP_PASSWORD" > "$UPLOAD_LOG" 2>&1
+
+          UPLOAD_STATUS=$?
+          set -e  # 恢复错误退出
+
+          echo "上传命令执行完成，状态码: $UPLOAD_STATUS"
+
+          # 读取日志内容
+          LOG_CONTENT=$(cat "$UPLOAD_LOG")
+
+          # 判断上传状态
+          if [ $UPLOAD_STATUS -eq 0 ]; then
+            STATUS="success"
+            MESSAGE="IPA 上传成功"
+          else
+            STATUS="error"
+            MESSAGE="IPA 上传失败"
+          fi
+
+          # 发送日志到回调 URL（如果配置了）
+          if [ "$CALLBACK_URL" != "null" ] && [ -n "$CALLBACK_URL" ]; then
+            echo "准备发送日志到回调接口..."
+
+            # 提取 Bundle ID
+            BUNDLE_ID=$(echo "$LOG_CONTENT" | grep -o 'com\.[a-zA-Z0-9._-]*' | head -n 1)
+            TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+            # 判断上传状态
+            if [ $UPLOAD_STATUS -eq 0 ]; then
+              STATUS="success"
+              MESSAGE="IPA 上传成功"
+            else
+              STATUS="error"
+              MESSAGE="IPA 上传失败"
+            fi
+
+            # 转义日志内容为 JSON 格式
+            LOG_JSON=$(echo "$LOG_CONTENT" | jq -Rs .)
+
+            # 发送 JSON 数据到 PHP 接口
+            curl -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{\"job_id\":\"$JOB_ID\",\"status\":\"$STATUS\",\"message\":\"$MESSAGE\",\"bundle_id\":\"${BUNDLE_ID:-未知}\",\"apple_id\":\"$APPLE_ID\",\"timestamp\":\"$TIMESTAMP\",\"log\":$LOG_JSON}" \
+              -o /tmp/callback_response.txt \
+              -w "%{http_code}" \
+              -s > /tmp/callback_status.txt
+
+            HTTP_CODE=$(cat /tmp/callback_status.txt)
+            RESPONSE_BODY=$(cat /tmp/callback_response.txt 2>/dev/null || echo "")
+
+            echo "回调响应状态码: $HTTP_CODE"
+            echo "回调响应内容: $RESPONSE_BODY"
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "日志已成功发送到回调接口"
+            else
+              echo "警告: 回调接口返回异常状态码 $HTTP_CODE"
+            fi
+          else
+            echo "未配置回调 URL，跳过日志发送"
+          fi
+
+          # 显示日志
+          cat "$UPLOAD_LOG"
+
+      - name: 删除敏感文件
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+              # 查找 JSON 配置文件
+              JSON_FILE=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- '*.json' 2>/dev/null | head -n 1)
+
+              if [ -z "$JSON_FILE" ]; then
+                JSON_FILE=$(find . -name "*.json" -type f | head -n 1)
+              fi
+
+              if [ -z "$JSON_FILE" ]; then
+                echo "未找到 JSON 文件，跳过清理"
+                exit 0
+              fi
+
+              REPO="${{ github.repository }}"
+
+              echo "准备删除配置文件: $JSON_FILE"
+
+              # 获取文件的 SHA 值
+              FILE_SHA=$(gh api "repos/$REPO/contents/$JSON_FILE" --jq '.sha' 2>/dev/null || true)
+
+              if [ -n "$FILE_SHA" ]; then
+                # 删除 JSON 配置文件
+                gh api -X DELETE "repos/$REPO/contents/$JSON_FILE" \
+                  -f message="清理敏感配置文件" \
+                  -f sha="$FILE_SHA" || true
+                echo "已成功删除文件: $JSON_FILE"
+              else
+                echo "文件 $JSON_FILE 不存在或已删除"
+              fi
