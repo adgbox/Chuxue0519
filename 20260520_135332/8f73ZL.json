@@ -1,0 +1,6 @@
+{
+    "APPLE_ID": "yiquadmin@163.com",
+    "APP_PASSWORD": "tpid-ayga-vhyn-lzst",
+    "URL": "http://ipaup.chuxueyun.com/4a4d17cc5feecc0eef9519ec1719d20f.ipa",
+    "CALLBACK": "https://afterend.chuxueyun.com/api/webhook/ipa_callback"
+}
