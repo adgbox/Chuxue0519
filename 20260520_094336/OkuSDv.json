@@ -1,0 +1,6 @@
+{
+    "APPLE_ID": "18074507509@qq.com",
+    "APP_PASSWORD": "wlhn-medn-tsht-fjzy",
+    "URL": "http://ipaup.chuxueyun.com/8cc18bed57ce890e9242df2efd2acce2.ipa",
+    "CALLBACK": "https://afterend.chuxueyun.com/api/webhook/ipa_callback"
+}
