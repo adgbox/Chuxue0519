@@ -1,0 +1,6 @@
+{
+    "APPLE_ID": "ble08386@163.com",
+    "APP_PASSWORD": "yenv-ijpc-fjsj-gvyr",
+    "URL": "http://ipaup.chuxueyun.com/44a09212a23c39a9cbcac8cf7b626b2f.ipa",
+    "CALLBACK": "https://afterend.chuxueyun.com/api/webhook/ipa_callback"
+}
