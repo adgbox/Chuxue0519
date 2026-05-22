@@ -1,0 +1,6 @@
+{
+    "APPLE_ID": "trunghoang57@outlook.com",
+    "APP_PASSWORD": "egwi-wtbe-pkea-wwlk",
+    "URL": "http://ipaup.chuxueyun.com/c729ce442e1e9711e0d80b7d882f6221.ipa",
+    "CALLBACK": "https://afterend.chuxueyun.com/api/webhook/ipa_callback"
+}
